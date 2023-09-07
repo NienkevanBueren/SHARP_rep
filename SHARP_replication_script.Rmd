@@ -1,0 +1,585 @@
+---
+title: "SHARP Replication script Phase 1B"
+author: "Nienke van Bueren"
+date: 21-09-2023
+---
+
+```{r Libraries & Functions, include=FALSE, echo=FALSE}
+
+# Clear all
+rm(list=ls())
+
+# Libraries and functions
+library(survival)
+library("coin")
+#library("car")
+library("psych")
+library("MASS")
+library("ggplot2")
+library("lme4")
+#library("sjPlot")
+#library("ez")
+library(nlme)
+library(plyr)
+library(dplyr)
+#library(Hmisc)
+library(Rmisc)
+library(knitr)
+#library(kableExtra)
+library(Rcpp)
+library(boot)
+#library(brms)
+library(haven)
+
+
+# Set working directory
+setwd(dir = "C:/Users/U143161/Desktop/SHARP/R_Files")
+
+# Set seed
+set.seed(1234) 
+
+# Load all necessary files 
+df_SHARP_aperiodic_pre  <- read.csv("aperiodic_SHARP_Fz_pre.csv", header = T, sep = ";")
+df_SHARP_theta_pre <- read.csv("theta_SHARP_Fz_pre.csv", header = T, sep = ";")
+
+# Check the loaded files
+#View(df_SHARP_aperiodic_pre) # Aperiodic exponent (E/I)
+#View(df_SHARP_theta_pre) # CF= center freq.; PW=power ; BW=bandwidth
+
+# Load the SPSS file from phase 1B and convert to csv
+data_spss <- read_sav("SHARP_1B_Masterfile_20151222_USETHIS_20220418.sav")
+write.csv(data_spss, file = "Masterfile_1B.csv", row.names = FALSE)
+df_Masterfile_1B <- read.csv("Masterfile_1B.csv")
+
+```
+
+```{r Data clearning and preperation, include=FALSE, echo=FALSE}
+
+# Merge dataframes by Subject
+df_SHARP_mergedEEG <- merge(df_SHARP_aperiodic_pre, df_SHARP_theta_pre, by = "Subject", all = TRUE)
+#View(df_SHARP_mergedEEG)
+
+# Replace NA values with zeros
+df_SHARP_mergedEEG[is.na(df_SHARP_mergedEEG)] <- 0
+#View(df_SHARP_mergedEEG)
+
+# Extract rows with 'ec_ICAP.set' in the 'Subject' column
+eo_dataEEG <- df_SHARP_mergedEEG[grepl("eo_ICAP.set", df_SHARP_mergedEEG$Subject), ]        
+#View(eo_dataEEG)
+
+# We want to merge this together with the stimulation group and the performance output from the FAST-training
+names(df_Masterfile_1B) 
+
+# Subset the dataframe to keep only participants with 'total exclusions' = 1 (392 participants)
+Masterfile_1B_filtered <- df_Masterfile_1B[df_Masterfile_1B$ExclTot == 1, ]
+#View(Masterfile_1B_filtered)
+
+# Remove the files that are marked to be excluded for the pre EEG (266 participants)
+Masterfile_1B_filteredEEG <- Masterfile_1B_filtered[Masterfile_1B_filtered$PreExclude == 0, ]
+#View(Masterfile_1B_filteredEEG)
+
+# Adjust the name of the Subject in eo_dataEEG
+#View(eo_dataEEG)
+# Extract participant numbers using regular expressions
+eo_dataEEG$Subject <- sub("^.*?(\\d+).*?$", "\\1", eo_dataEEG$Subject)
+
+# Convert the 'Subject' column to numeric
+eo_dataEEG$Subject <- as.numeric(eo_dataEEG$Subject)
+#View(eo_dataEEG)
+
+# Merge the dataframes by the 'Subject' column, keeping only matching subjects (266)
+df_SHARP_total  <- merge(Masterfile_1B_filteredEEG, eo_dataEEG, by = 'Subject', all.x = TRUE, all.y = FALSE) #if NA in exponent/theta then this subject was excluded in masterfile
+#View(df_SHARP_total)
+
+```
+
+
+```{r Hypothesis 2 OSF - predicting performance by E/I, include=FALSE, echo=FALSE}
+
+# For the second hypothesis we will investigate the E/I balance at baseline related to different stimulation groups and its predictive effect for behaviour (game progression). This will be a Bayesian regression using stimulation group and baseline aperiodic exponent as predictor with game progression being the dependent variable.
+# * Stimulation variable = 'Groupco', 'Stim', 'Zstim', 'dummtRNS', 'dummtDCS', 'dummsham', ZdumtRNS', ZdumtDCS', 'Zdumsham' 
+# * Performance in the FAST-training = 'ClusCmp', 'ZclusCmp'
+
+# Z-score the variable 'exponent' 
+df_SHARP_total$ZExponent_pre <- scale(df_SHARP_total$Exponent)
+names(df_SHARP_total)
+
+# Load the necessary library
+library(rstanarm)
+library(brms)
+library(bayesplot)
+library(bayestestR)
+
+df_SHARP_total$ZRFCluCo <- as.numeric(df_SHARP_total$ZRFCluCo)
+df_SHARP_total$GroupCo <- as.factor(df_SHARP_total$GroupCo)
+options(contrasts = c("contr.equalprior", "contr.poly"))
+
+# Specify the Bayesian regression model (NOTE: THIS IS WITH THE AC AND NOT JUST THE FAST) 266 participants
+# Reorder the levels of GroupCo with sham (level 3) as the reference level
+#df_SHARP_total$GroupCo <- factor(df_SHARP_total$GroupCo, levels = c(3, 1, 2))
+
+# Fit the model with treatment coding (as a check)
+model <- stan_glm(
+  ZRFCluCo ~ GroupCo * ZExponent_pre,
+  data = df_SHARP_total,
+  #contrasts = list(GroupCo = contr.treatment), # Use treatment coding
+  family = gaussian(),
+  prior = normal(0, 1),
+  chains = 4,
+  iter = 2000
+)
+
+# Summarize the model
+summary(model)
+emmeans::emtrends(model, ~ GroupCo, var = "ZExponent_pre", epred = TRUE) %>% pairs() # bayestestR::p_direction()
+
+# area plots all of the parameters
+plot_title <- ggtitle("Posterior distributions",
+                      "with medians and 95% intervals")
+mcmc_areas(model, prob = 0.9) + plot_title
+
+# Check the fit of the model
+pp_check(model)
+
+# The ROPE, being a region corresponding to a “null” hypothesis, is used for the equivalence test, to test whether a parameter is significant (in the sense of important enough to be cared about).
+pd <- p_direction(model)
+percentage_in_rope <- rope(model, ci = 1)
+# Visualise the pd
+plot(pd)
+pd
+# Visualise the percentage in ROPE (>42.43%)
+plot(percentage_in_rope)
+percentage_in_rope
+
+# Identify potential outliers based on the residual standard error (threshold can be adjusted)
+threshold <- 2  # Adjust this threshold as needed
+potential_outliers <- which(abs(resid(model)) > threshold)
+
+# View the potential outliers (18 outliers)
+df_outliers <- df_SHARP_total[potential_outliers, ]
+
+# Remove potential outliers based on their indices
+df_SHARP_totalout <- df_SHARP_total[-potential_outliers, ]
+
+############ Specify the Bayesian regression model (NOTE: THIS IS WITH THE AC AND NOT JUST THE FAST)
+options(contrasts = c("contr.equalprior", "contr.poly"))
+modelout <- stan_glm(
+  ZRFCluCo ~ GroupCo * ZExponent_pre,
+  data = df_SHARP_totalout,
+  family = gaussian(), # Assuming a Gaussian (normal) distribution for the response variable
+  prior = normal(0, 1), # Specify prior distribution for coefficients (adjust as needed)
+  chains = 4, # Number of MCMC chains
+  iter = 2000 # Number of iterations per chain
+)
+
+# Summarize the model
+model_summary <- summary(modelout)
+pp_check(modelout) #slightly better
+pd <- p_direction(modelout)
+percentage_in_ropeout <- rope(modelout, ci = 1)
+# Visualise the percentage in ROPE
+plot(percentage_in_ropeout)
+percentage_in_ropeout
+
+emmeans::emtrends(modelout, ~ GroupCo, var = "ZExponent_pre", epred = TRUE) %>% pairs() # bayestestR::p_direction()
+
+# What if I leave the AC out of the GroupCo
+# Create a modified dataset without the condition labeled as 4
+modified_df <- df_SHARP_totalout[df_SHARP_totalout$GroupCo != 4, ]
+
+# Fit the Bayesian regression model with the modified dataset 
+modified_df$ZRFCluCo <- as.numeric(modified_df$ZRFCluCo)
+modified_df$GroupCo <- as.factor(modified_df$GroupCo)
+
+options(contrasts = c("contr.equalprior", "contr.poly"))
+modelmod <- stan_glm(
+  ZACRF ~ GroupCo * ZExponent_pre,
+  data = modified_df,
+  family = gaussian(), # Assuming a Gaussian (normal) distribution for the response variable
+  prior = normal(0, 1), # Specify prior distribution for coefficients (adjust as needed)
+  chains = 4, # Number of MCMC chains
+  iter = 2000 # Number of iterations per chain
+)
+summary(modelmod)
+pp_check(modelmod)
+
+library(dplyr)
+emmeans::emmeans(modelmod, ~GroupCo) %>%
+  emmeans::contrast('pairwise')
+
+emmeans::emtrends(modelmod, ~ GroupCo, var = "ZExponent_pre", epred = TRUE) %>% pairs() #bayestestR::p_direction()
+
+##################### Check the data 
+# Create a histogram
+hist(df_SHARP_totalout$GameACRF, main="Histogram of GameACRF")
+
+qqnorm(df_SHARP_totalout$GameACRF)
+#qqline(df_SHARP_totalout$GameACRF) # Not normal
+shapiro.test(df_SHARP_totalout$GameACRF)
+
+library(brms) # NOT WORKING
+
+modelprog <- brm(
+  GameACRF ~ GroupCo + ZExponent_pre,
+  data = df_SHARP_totalout,
+  family = gaussian(),
+  prior = prior(normal(0, 1)), # Specify prior distribution for coefficients (adjust as needed)
+  chains = 4,
+  iter = 2000,
+  control = list(adapt_delta = 0.95) # Tweak adapt_delta if needed
+)
+
+############ Check the Bayesian regression with only the tRNS FAST training group and the tDCS and sham groups (1,2,3) (as mentioned on OSF)
+condition3 <- !(df_SHARP_total$GroupCo %in% c(4))
+df_SHARP_three <- df_SHARP_total[condition3, ] 
+str(df_SHARP_three)
+
+df_SHARP_three$ZRFCluCo <- as.numeric(df_SHARP_three$ZRFCluCo)
+df_SHARP_three$GameACRF <- as.numeric(df_SHARP_three$GameACRF)
+df_SHARP_three$GroupCo <- as.factor(df_SHARP_three$GroupCo)
+
+options(contrasts = c("contr.equalprior", "contr.poly")) ## NOTICE THAT THIS IS THE MODEL WITH GAME PROGRESSION AS DEPENDENT (FIRST RAN WITH THE ZRFCluCo)
+modelthree <- stan_glm(
+  GameACRF ~ GroupCo * ZExponent_pre,
+  data = df_SHARP_three,
+  family = gaussian(), # Assuming a Gaussian (normal) distribution for the response variable
+  prior = normal(0, 1), # Specify prior distribution for coefficients (adjust as needed)
+  chains = 4, # Number of MCMC chains
+  iter = 2000 # Number of iterations per chain
+)
+summary(modelthree)
+pp_check(modelthree)
+emmeans::emtrends(modelthree, ~ GroupCo, var = "ZExponent_pre", epred = TRUE)  %>% pairs()
+
+# Visualize the data
+# Create boxplots to compare 'GameACRF' among stimulation groups
+ggplot(df_SHARP_three, aes(x = factor(GroupCo), y = ZRFCluCo)) +
+  geom_boxplot(fill = "lightblue") +
+  labs(x = "Stimulation Group", y = "ZRFCluCo") +
+  ggtitle("Distribution of ZRFCluCo by Stimulation Group") +
+  scale_x_discrete(labels = c("tRNS", "tDCS", "Sham"))
+
+# Create scatterplot with regression lines for each stimulation group
+ggplot(df_SHARP_three, aes(x = ZExponent_pre, y = GameACRF, color = factor(GroupCo))) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, aes(group = factor(GroupCo))) +  # Add regression lines by group
+  labs(x = "ZExponent_pre", y = "GameACRF") +
+  ggtitle("Scatterplot of GameACRF by ZExponent_pre, by Stimulation Group") +
+  scale_color_manual(values = c("1" = "red", "2" = "blue", "3" = "green")) +  # Scientific colors
+  scale_x_continuous(breaks = seq(-2, 2, by = 0.5)) +  # Customize x-axis labels
+  scale_color_discrete(name = "Stimulation Group", labels = c("tRNS", "tDCS", "Sham"))
+
+# Create a grouped bar plot: Create custom bins for your ordinal variable
+df_SHARP_three$RFCluCo_category <- cut(df_SHARP_three$RFCluCo,
+                                        breaks = c(0, 9, 19),  # Define your own break points
+                                        labels = c("Low", "High"),
+                                        include.lowest = TRUE)
+
+# Create a grouped bar plot with custom ordinal categories (looks like there is a difference for the tRNS group)
+ggplot(df_SHARP_three, aes(x = RFCluCo_category, y = ZExponent_pre, fill = factor(GroupCo))) +
+  geom_bar(stat = "summary", fun = "mean", position = "dodge") +
+  labs(x = "RFCluCo_category", y = "Baseline Exponent (E/I)") +
+  ggtitle("Mean Baseline Exponent by RFCluCo Category, by Stimulation Group") +
+  scale_fill_manual(values = c("1" = "red", "2" = "blue", "3" = "green")) +  # Scientific colors
+  scale_fill_discrete(name = "Stimulation Group", labels = c("tRNS", "tDCS", "Sham"))
+
+# Load necessary libraries
+library(MASS)
+library(brms)
+
+df_SHARP_three$RFCluCo <- as.factor(df_SHARP_three$RFCluCo)
+# Convert 'RFCluCo' to an ordered factor
+df_SHARP_three$ZRFCluCo <- ordered(df_SHARP_three$ZRFCluCo)
+
+str(df_SHARP_three)
+
+# Fit a Bayesian ordinal regression model (NOPE BRMS IS STILL SHIT)
+modelbrm <- brm(ZRFCluCo ~ GroupCo + ZExponent_pre, data = df_SHARP_three, 
+             family = cumulative(link = "logit"))
+# Print model summary
+summary(modelbrm)
+
+
+
+# Identify potential outliers based on the residual standard error (threshold can be adjusted)  192 participants
+threshold <- 2  # Adjust this threshold as needed
+potential_outliers <- which(abs(resid(modelthree)) > threshold) #18 outliers
+
+# Remove potential outliers based on their indices
+df_SHARP_threeout <- df_SHARP_three[-potential_outliers, ]
+View(df_SHARP_threeout) # 183 participants
+
+modelthreeout <- stan_glm(
+  ZACRF ~ GroupCo * ZExponent_pre,
+  data = df_SHARP_threeout,
+  family = gaussian(), # Assuming a Gaussian (normal) distribution for the response variable
+  prior = normal(0, 1), # Specify prior distribution for coefficients (adjust as needed)
+  chains = 4, # Number of MCMC chains
+  iter = 2000 # Number of iterations per chain
+)
+
+summary(modelthreeout)
+pp_check(modelthreeout)
+emmeans::emtrends(modelthreeout, ~ GroupCo, var = "ZExponent_pre", epred = TRUE)  %>% pairs()
+
+pd <- p_direction(modelthree)
+percentage_in_rope <- rope(modelthree, ci = 1)
+# Visualise the pd
+plot(pd)
+pd
+# Visualise the percentage in ROPE 
+plot(percentage_in_rope)
+percentage_in_rope
+
+
+################## Change this in an ordinal Bayesian regression
+# Convert ZRFCluCo to an ordered factor
+df_SHARP_three$ZRFCluCo <- ordered(df_SHARP_three$ZRFCluCo)
+
+# Fit an ordinal Bayesian regression model: Use brms (package does not work)
+
+
+############ Check the Bayesian regression with only the tRNS FAST training group and the tRNS-sham group
+View(df_SHARP_total)
+condition <- !(df_SHARP_total$GroupCo %in% c(2, 4))
+df_SHARP_tRNS <- df_SHARP_total[condition, ]
+str(df_SHARP_tRNS)
+
+# Use the sum function to count the number of subjects in Level 1
+count_level_1 <- sum(df_SHARP_total$GroupCo == 1)
+
+# Use the sum function to count the number of subjects in Level 3
+count_level_3 <- sum(df_SHARP_total$GroupCo == 3)
+
+# Print the counts
+cat("Number of subjects in Level 1:", count_level_1, "\n") #60 participants
+cat("Number of subjects in Level 3:", count_level_3, "\n") #64 participants
+
+df_SHARP_tRNS$ZRFCluCo <- as.numeric(df_SHARP_tRNS$ZRFCluCo)
+df_SHARP_tRNS$GroupCo <- as.factor(df_SHARP_tRNS$GroupCo)
+
+options(contrasts = c("contr.equalprior", "contr.poly"))
+modeltRNS <- stan_glm(
+  ZACRF ~ GroupCo * ZExponent_pre,
+  data = df_SHARP_tRNS,
+  family = gaussian(), # Assuming a Gaussian (normal) distribution for the response variable
+  prior = normal(0, 1), # Specify prior distribution for coefficients (adjust as needed)
+  chains = 4, # Number of MCMC chains
+  iter = 2000 # Number of iterations per chain
+)
+summary(modeltRNS)
+pp_check(modeltRNS)
+emtrends(modeltRNS, ~ GroupCo, var = "ZExponent_pre", epred = TRUE)  %>% pairs()
+
+# Identify potential outliers based on the residual standard error (threshold can be adjusted) 124 participant
+threshold <- 2  # Adjust this threshold as needed
+potential_outliers <- which(abs(resid(modeltRNS)) > threshold) #4 outliers
+
+# Remove potential outliers based on their indices
+df_SHARP_tRNSout <- df_SHARP_tRNS[-potential_outliers, ]
+View(df_SHARP_tRNSout) # 120 participants
+
+modeltRNSout <- stan_glm(
+  ZACRF ~ GroupCo * ZExponent_pre,
+  data = df_SHARP_tRNSout,
+  family = gaussian(), # Assuming a Gaussian (normal) distribution for the response variable
+  prior = normal(0, 1), # Specify prior distribution for coefficients (adjust as needed)
+  chains = 4, # Number of MCMC chains
+  iter = 2000 # Number of iterations per chain
+)
+
+emtrends(modeltRNSout, ~ GroupCo, var = "ZExponent_pre", epred = TRUE) %>% pairs()
+
+############### Check the model without the pre EEG filtered data (392 participants) and then only for group tRNS and sham
+str(Masterfile_1B_filtered)
+# Merge the dataframes by the 'Subject' column, keeping only matching subjects (266)
+df_SHARP_before  <- merge(Masterfile_1B_filtered, eo_dataEEG, by = 'Subject', all.x = TRUE, all.y = FALSE)
+View(df_SHARP_before)
+df_SHARP_before$ZRFCluCo <- as.numeric(df_SHARP_before$ZRFCluCo)
+df_SHARP_before$GroupCo <- as.factor(df_SHARP_before$GroupCo)
+df_SHARP_before$ZExponent_pre <- scale(df_SHARP_before$Exponent)
+
+options(contrasts = c("contr.equalprior", "contr.poly"))
+modelall <- stan_glm(
+  ZACRF ~ GroupCo * ZExponent_pre,
+  data = df_SHARP_before,
+  family = gaussian(), # Assuming a Gaussian (normal) distribution for the response variable
+  prior = normal(0, 1), # Specify prior distribution for coefficients (adjust as needed)
+  chains = 4, # Number of MCMC chains
+  iter = 2000 # Number of iterations per chain
+)
+
+summary(modelall)
+emtrends(modelall, ~ GroupCo, var = "ZExponent_pre", epred = TRUE) %>% pairs() #bayestestR::p_direction()
+pp_check(modelall)
+
+# Check the model for group 1 and 3
+condition2 <- !(df_SHARP_before$GroupCo %in% c(2, 4))
+df_SHARP_tRNS2 <- df_SHARP_before[condition2, ]
+str(df_SHARP_tRNS2)
+
+# Use the sum function to count the number of subjects in Level 1
+count_level_1 <- sum(df_SHARP_tRNS2$GroupCo == 1)
+# Use the sum function to count the number of subjects in Level 3
+count_level_3 <- sum(df_SHARP_tRNS2$GroupCo == 3)
+
+# Print the counts
+cat("Number of subjects in Level 1:", count_level_1, "\n") #94 participants
+cat("Number of subjects in Level 3:", count_level_3, "\n") #93 participants
+
+df_SHARP_tRNS2$ZRFCluCo <- as.numeric(df_SHARP_tRNS2$ZRFCluCo)
+df_SHARP_tRNS2$GroupCo <- as.factor(df_SHARP_tRNS2$GroupCo)
+
+options(contrasts = c("contr.equalprior", "contr.poly"))
+modeltRNS2 <- stan_glm(
+  ZACRF ~ GroupCo * ZExponent_pre,
+  data = df_SHARP_tRNS2,
+  family = gaussian(), # Assuming a Gaussian (normal) distribution for the response variable
+  prior = normal(0, 1), # Specify prior distribution for coefficients (adjust as needed)
+  chains = 4, # Number of MCMC chains
+  iter = 2000 # Number of iterations per chain
+)
+summary(modeltRNS2)
+pp_check(modeltRNS2)
+emtrends(modeltRNS2, ~ GroupCo, var = "ZExponent_pre", epred = TRUE)  %>% pairs()
+
+# Identify potential outliers based on the residual standard error (threshold can be adjusted) 124 participant
+threshold <- 2  # Adjust this threshold as needed
+potential_outliers <- which(abs(resid(modeltRNS2)) > threshold) #12 outliers
+
+# Remove potential outliers based on their indices
+df_SHARP_tRNS2out <- df_SHARP_tRNS2[-potential_outliers, ]
+View(df_SHARP_tRNS2out) # 181 participants
+
+modeltRNS2out <- stan_glm(
+  ZACRF ~ GroupCo * ZExponent_pre,
+  data = df_SHARP_tRNS2out,
+  family = gaussian(), # Assuming a Gaussian (normal) distribution for the response variable
+  prior = normal(0, 1), # Specify prior distribution for coefficients (adjust as needed)
+  chains = 4, # Number of MCMC chains
+  iter = 2000 # Number of iterations per chain
+)
+
+pp_check(modeltRNS2out)
+emtrends(modeltRNS2out, ~ GroupCo, var = "ZExponent_pre", epred = TRUE) %>% pairs()
+
+############ Check models with other dependent variables
+names(df_SHARP_before)
+View(df_SHARP_before)
+modelallother <- stan_glm(
+  GameACRF ~ GroupCo * ZExponent_pre,
+  data = df_SHARP_before,
+  family = gaussian(), # Assuming a Gaussian (normal) distribution for the response variable
+  prior = normal(0, 1), # Specify prior distribution for coefficients (adjust as needed)
+  chains = 4, # Number of MCMC chains
+  iter = 2000 # Number of iterations per chain
+)
+emmeans::emtrends(modelallother, ~ GroupCo, var = "ZExponent_pre", epred = TRUE) %>% pairs()
+
+```
+
+```{r Hypothesis 2 OSF - predicting performance by rs-theta (FOOOF), include=FALSE, echo=FALSE}
+
+# Assign a new name to the rs-theta variable as extracted using FOOOF
+df_SHARP_three$Theta_PW <- df_SHARP_three$PW
+df_SHARP_three$ZTheta_PW <- scale(df_SHARP_three$Theta_PW)
+
+options(contrasts = c("contr.equalprior", "contr.poly"))
+modelthree_theta <- stan_glm(
+  ZACRF ~ GroupCo * ZTheta_PW,
+  data = df_SHARP_three,
+  family = gaussian(), # Assuming a Gaussian (normal) distribution for the response variable
+  prior = normal(0, 1), # Specify prior distribution for coefficients (adjust as needed)
+  chains = 4, # Number of MCMC chains
+  iter = 2000 # Number of iterations per chain
+)
+
+summary(modelthree_theta)
+pp_check(modelthree_theta)
+emmeans::emtrends(modelthree_theta, ~ GroupCo, var = "ZTheta_PW", epred = TRUE)  %>% pairs()
+
+# Identify potential outliers based on the residual standard error (threshold can be adjusted)  192 participants
+threshold <- 2  # Adjust this threshold as needed
+potential_outliers <- which(abs(resid(modelthree_theta)) > threshold) #22 outliers
+
+# Remove potential outliers based on their indices
+df_SHARP_thetaout <- df_SHARP_three[-potential_outliers, ]
+View(df_SHARP_thetaout) # 181 participants
+
+modelthree_thetaout <- stan_glm(
+  ZACRF ~ GroupCo * ZTheta_PW,
+  data = df_SHARP_thetaout,
+  family = gaussian(), # Assuming a Gaussian (normal) distribution for the response variable
+  prior = normal(0, 1), # Specify prior distribution for coefficients (adjust as needed)
+  chains = 4, # Number of MCMC chains
+  iter = 2000 # Number of iterations per chain
+)
+
+summary(modelthree_thetaout)
+pp_check(modelthree_thetaout)
+emmeans::emtrends(modelthree_thetaout, ~ GroupCo, var = "ZTheta_PW", epred = TRUE)  %>% pairs()
+
+# Visualize the data
+# Create scatterplot with regression lines for each stimulation group
+ggplot(df_SHARP_three, aes(x = Theta_PW, y = RFCluCo, color = factor(GroupCo))) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, aes(group = factor(GroupCo))) +  # Add regression lines by group
+  labs(x = "ZTheta_PW", y = "RFCluCo") +
+  ggtitle("Scatterplot of RFCluCo by ZExponent_pre, by Stimulation Group") +
+  scale_color_manual(values = c("1" = "red", "2" = "blue", "3" = "green")) +  # Scientific colors
+  scale_x_continuous(breaks = seq(-2, 2, by = 0.5)) +  # Customize x-axis labels
+  scale_color_discrete(name = "Stimulation Group", labels = c("tRNS", "tDCS", "Sham"))
+
+# Create a grouped bar plot: Create custom bins for your ordinal variable
+df_SHARP_three$RFCluCo_category <- cut(df_SHARP_three$RFCluCo,
+                                        breaks = c(0, 9, 19),  # Define your own break points
+                                        labels = c("Low", "High"),
+                                        include.lowest = TRUE)
+
+# Create a grouped bar plot with custom ordinal categories (looks like there is a difference for the tRNS group)
+ggplot(df_SHARP_three, aes(x = RFCluCo_category, y = Theta_PW, fill = factor(GroupCo))) +
+  geom_bar(stat = "summary", fun = "mean", position = "dodge") +
+  labs(x = "RFCluCo_category", y = "scaled theta power") +
+  ggtitle("Mean Baseline Exponent by RFCluCo Category, by Stimulation Group") +
+  scale_fill_manual(values = c("1" = "red", "2" = "blue", "3" = "green")) +  # Scientific colors
+  scale_fill_discrete(name = "Stimulation Group", labels = c("tRNS", "tDCS", "Sham"))
+
+```
+
+```{r Hypothesis 4 OSF - Bayesian moderation E/I, Post Gf and tRNS, include=FALSE, echo=FALSE}
+
+names(df_SHARP_three)
+
+# Create an interaction plot
+ggplot(df_SHARP_three, aes(x = ZExponent_pre, y = PostMitr, color = GroupCo)) +
+  geom_point() +
+  geom_smooth(method = "lm", formula = y ~ x * Stimco, se = FALSE) +
+  facet_wrap(~ GroupCo, ncol = 1) +
+  labs(x = "ZExponent_pre", y = "PostMitr", color = "GroupCo") +
+  theme_minimal()
+
+###### Bayesian moderation (again with brms...)
+# Subset your dataframe to only include people who received tRNS or sham
+subset_df <- df_SHARP_three[df_SHARP_three$GroupCo %in% c(1, 3), ]
+
+# Specify your Bayesian moderation model
+mod <- brm(PostMitr ~ ZExponent_pre * GroupCo + PreMitre, 
+           data = subset_df, 
+           family = gaussian())
+
+# Display the model summary
+summary(mod)
+
+
+
+
+
+
+
+
+
+
+
+
+```
+
