@@ -33,7 +33,7 @@ library(haven)
 
 
 # Set working directory
-setwd(dir = "C:/Users/U143161/Desktop/SHARP/R_Files") ########helllo shachar GITHUB REAL-TIME CODING IS SHIT
+setwd(dir = "C:/Users/U143161/Desktop/SHARP/R_Files") 
 
 # Set seed
 set.seed(1234) 
@@ -42,9 +42,14 @@ set.seed(1234)
 df_SHARP_aperiodic_pre  <- read.csv("aperiodic_SHARP_Fz_pre.csv", header = T, sep = ";")
 df_SHARP_theta_pre <- read.csv("theta_SHARP_Fz_pre.csv", header = T, sep = ";")
 
+df_SHARP_aperiodic_post  <- read.csv("aperiodic_SHARP_Fz_post.csv", header = T, sep = ";")
+df_SHARP_theta_post <- read.csv("Theta_SHARP_Fz_post.csv", header = T, sep = ";")
+
 # Check the loaded files
-#View(df_SHARP_aperiodic_pre) # Aperiodic exponent (E/I)
+#View(df_SHARP_aperiodic_pre) # Aperiodic exponent pre (E/I)
+#View(df_SHARP_aperiodic_post) # Aperiodic exponent post (E/I)
 #View(df_SHARP_theta_pre) # CF= center freq.; PW=power ; BW=bandwidth
+#View(df_SHARP_theta_post) # CF= center freq.; PW=power ; BW=bandwidth already replaced the zero due to comma misplacements in the other values (ENG-DUTCH excel)
 
 # Load the SPSS file from phase 1B and convert to csv
 data_spss <- read_sav("SHARP_1B_Masterfile_20151222_USETHIS_20220418.sav")
@@ -53,19 +58,27 @@ df_Masterfile_1B <- read.csv("Masterfile_1B.csv")
 
 ```
 
-```{r Data clearning and preperation, include=FALSE, echo=FALSE}
+```{r Data clearning (pre and post files) and preperation, include=FALSE, echo=FALSE}
 
-# Merge dataframes by Subject
+# Merge dataframes by Subject (pre)
 df_SHARP_mergedEEG <- merge(df_SHARP_aperiodic_pre, df_SHARP_theta_pre, by = "Subject", all = TRUE)
 #View(df_SHARP_mergedEEG)
 
-# Replace NA values with zeros
+# Merge dataframe by Subject (post)
+df_SHARP_mergedEEGpost <- merge(df_SHARP_aperiodic_post, df_SHARP_theta_post, by = "Subject", all = TRUE)
+View(df_SHARP_mergedEEGpost)
+
+# Replace NA values with zeros (only for pre)
 df_SHARP_mergedEEG[is.na(df_SHARP_mergedEEG)] <- 0
 #View(df_SHARP_mergedEEG)
 
-# Extract rows with 'ec_ICAP.set' in the 'Subject' column
+# Extract rows with 'ec_ICAP.set' in the 'Subject' column (pre)
 eo_dataEEG <- df_SHARP_mergedEEG[grepl("eo_ICAP.set", df_SHARP_mergedEEG$Subject), ]        
-#View(eo_dataEEG)
+View(eo_dataEEG)
+
+# Extract rows with 'ec_ICAP.set' in the 'Subject' column (post)
+eo_dataEEGpost <- df_SHARP_mergedEEGpost[grepl("eo_ICAP.set", df_SHARP_mergedEEGpost$Subject), ]        
+View(eo_dataEEGpost)
 
 # We want to merge this together with the stimulation group and the performance output from the FAST-training
 names(df_Masterfile_1B) 
@@ -75,21 +88,124 @@ Masterfile_1B_filtered <- df_Masterfile_1B[df_Masterfile_1B$ExclTot == 1, ]
 #View(Masterfile_1B_filtered)
 
 # Remove the files that are marked to be excluded for the pre EEG (266 participants)
-Masterfile_1B_filteredEEG <- Masterfile_1B_filtered[Masterfile_1B_filtered$PreExclude == 0, ]
-#View(Masterfile_1B_filteredEEG)
+Masterfile_1B_filteredpre <- Masterfile_1B_filtered[Masterfile_1B_filtered$PreExclude == 0, ]
+View(Masterfile_1B_filteredpre)
+length(unique(Masterfile_1B_filteredpre$Subject))
 
-# Adjust the name of the Subject in eo_dataEEG
+
+# Remove the files that are marked to be excluded for the post EEG (294 participants)
+Masterfile_1B_filteredpost <- Masterfile_1B_filtered[Masterfile_1B_filtered$PostExclude == 0, ]
+length(unique(Masterfile_1B_filteredpost$Subject))
+
+
+# Adjust the name of the Subject in eo_dataEEG and eo_dataEEGpost
 #View(eo_dataEEG)
 # Extract participant numbers using regular expressions
 eo_dataEEG$Subject <- sub("^.*?(\\d+).*?$", "\\1", eo_dataEEG$Subject)
+eo_dataEEGpost$Subject <- sub("^.*?(\\d+).*?$", "\\1", eo_dataEEGpost$Subject)
 
 # Convert the 'Subject' column to numeric
 eo_dataEEG$Subject <- as.numeric(eo_dataEEG$Subject)
-#View(eo_dataEEG)
+eo_dataEEGpost$Subject <- as.numeric(eo_dataEEGpost$Subject)
+View(eo_dataEEG)
 
-# Merge the dataframes by the 'Subject' column, keeping only matching subjects (266)
-df_SHARP_total  <- merge(Masterfile_1B_filteredEEG, eo_dataEEG, by = 'Subject', all.x = TRUE, all.y = FALSE) #if NA in exponent/theta then this subject was excluded in masterfile
-#View(df_SHARP_total)
+# Merge the dataframes by the 'Subject' column, keeping only matching subjects for both the pre and the post data files separately
+names(eo_dataEEG)[names(eo_dataEEG) == "Exponent"] <- "Exponent_pre"
+names(eo_dataEEGpost)[names(eo_dataEEGpost) == "Exponent"] <- "Exponent_post"
+
+df_SHARP_total  <- merge(Masterfile_1B_filteredpre, eo_dataEEG, by = 'Subject', all.x = TRUE, all.y = FALSE) #if NA in exponent/theta then this subject was excluded in masterfile
+View(df_SHARP_total)
+
+df_SHARP_totalpost  <- merge(Masterfile_1B_filteredpost, eo_dataEEGpost, by = 'Subject', all.x = TRUE, all.y = FALSE) #if NA in exponent/theta then this subject was excluded in masterfile
+View(df_SHARP_totalpost)
+
+```
+
+```{r Hypothesis 1 OSF - E/I change before and after stimulation, include=FALSE, echo=FALSE}
+
+# Merge the pre and post dataframes together in 1 dataframe
+df_AllEEG <- merge(eo_dataEEG, eo_dataEEGpost, by = 'Subject')
+View(df_AllEEG)
+
+# Create a single dataframe with rows that meet both conditions
+combined_filtered_df <- subset(Masterfile_1B_filtered, PostExclude == 0 & PreExclude == 0)
+View(combined_filtered_df)
+
+df_SHARP_totalboth <- merge(combined_filtered_df, df_AllEEG, by = 'Subject')
+View(df_SHARP_totalboth) #247 participants 
+
+# Create the E/I change variable
+df_SHARP_totalboth$Change_Exponent <- df_SHARP_totalboth$Exponent_post - df_SHARP_totalboth$Exponent_pre
+names(df_SHARP_totalboth)
+
+# Scale (Z-score) this E/I change variable
+df_SHARP_totalboth$ZChange_Exponent <- scale(df_SHARP_totalboth$Change_Exponent)
+names(df_SHARP_totalboth)
+
+# Run an one-way ANOVA (NHST)
+# Convert GroupCo to a factor if it's not already
+df_SHARP_totalboth$GroupCo <- factor(df_SHARP_totalboth$GroupCo)
+# Ensure Change_Exponent is numeric (convert if necessary)
+df_SHARP_totalboth$Change_Exponent <- as.numeric(df_SHARP_totalboth$Change_Exponent)
+
+ANOVA <- aov(df_SHARP_totalboth$ZChange_Exponent ~ GroupCo, data = df_SHARP_totalboth)
+summary(ANOVA)
+
+write.csv(df_SHARP_totalboth, file = 'df_SHARP_totalboth.csv')
+
+# Make "sham" the reference group
+#df_SHARP_totalboth$GroupCo <- relevel(df_SHARP_totalboth$GroupCo, ref = "3")
+
+# Perform one-way ANOVA
+#model <- lm(ZChange_Exponent ~ GroupCo, data = df_SHARP_totalboth)
+#anova_result <- anova(model)
+#print(anova_result)
+
+# Check the assumptions of the ANOVA
+shapiro.test(residuals(ANOVA)) #residuals are normally distributed
+
+# Create a violin plot
+# Load the necessary libraries
+library(ggplot2)
+
+# Create a violin plot with individual data points
+ggplot(df_SHARP_totalboth, aes(x = GroupCo, y = Change_Exponent, fill = GroupCo)) +
+  geom_violin(trim = FALSE) +
+  geom_jitter(width = 0.2, size = 2) +
+  labs(x = "Stimulation Group", y = "Change Exponent              increase E/I") +
+  theme_minimal() 
+length(df_SHARP_totalboth$Subject)
+
+# Run an one-way ANOVA (Bayesian) - in JASP
+
+######################### Also check for rs-theta
+
+# Create the theta change variable
+names(df_SHARP_totalboth)[names(df_SHARP_totalboth) == "PW.x"] <- "Theta_pre"
+names(df_SHARP_totalboth)[names(df_SHARP_totalboth) == "PW.y"] <- "Theta_post"
+
+df_SHARP_totalboth$Change_Theta <- df_SHARP_totalboth$Theta_post - df_SHARP_totalboth$Theta_pre
+names(df_SHARP_totalboth)
+
+# Scale (Z-score) this theta change variable
+df_SHARP_totalboth$ZChange_Theta <- scale(df_SHARP_totalboth$Change_Theta)
+names(df_SHARP_totalboth)
+
+df_SHARP_totalboth$ZChange_Theta <- as.numeric(df_SHARP_totalboth$ZChange_Theta)
+
+ANOVA_theta <- aov(df_SHARP_totalboth$ZChange_Theta ~ GroupCo, data = df_SHARP_totalboth)
+summary(ANOVA_theta)
+
+# Create a violin plot with individual data points
+ggplot(df_SHARP_totalboth, aes(x = GroupCo, y = Change_Theta, fill = GroupCo)) +
+  geom_violin(trim = FALSE) +
+  geom_jitter(width = 0.2, size = 2) +
+  labs(x = "Stimulation Group", y = "Change rs-theta              increase Theta") +
+  theme_minimal() 
+length(df_SHARP_totalboth$Subject)
+
+## No need to run a Bayesian ANOVA for the fooofed theta-values
+
 
 ```
 
